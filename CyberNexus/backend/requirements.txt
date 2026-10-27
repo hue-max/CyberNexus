@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+pyodbc
+boto3
+pydantic
+python-dotenv

@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials
+.aws/
+
+# Local databases, backups, and logs
+*.bak
+*.trn
+*.mdf
+*.ldf
+*.sqlite3
+*.db
+*.log
+backup-recovery/**/private/
+backup-recovery/**/real-data/
+
+# Frontend
+node_modules/
+dist/
+build/
+
+# IDE and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
