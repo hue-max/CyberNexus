@@ -1,6 +1,0 @@
-
-USE CyberNexusDB;
-GO
-
-DBCC SQLPERF(LOGSPACE);
-GO
