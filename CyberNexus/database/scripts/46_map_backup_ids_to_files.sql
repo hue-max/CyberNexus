@@ -1,0 +1,22 @@
+SELECT
+    bs.backup_set_id,
+    CASE bs.type
+        WHEN 'D' THEN 'Full'
+        WHEN 'I' THEN 'Differential'
+        WHEN 'L' THEN 'Transaction Log'
+        ELSE bs.type
+    END AS BackupType,
+    bs.backup_start_date,
+    bs.backup_finish_date,
+    bmf.physical_device_name AS BackupFile,
+    bs.first_lsn,
+    bs.last_lsn,
+    bs.checkpoint_lsn,
+    bs.database_backup_lsn,
+    bs.differential_base_lsn
+FROM msdb.dbo.backupset AS bs
+JOIN msdb.dbo.backupmediafamily AS bmf
+    ON bs.media_set_id = bmf.media_set_id
+WHERE bs.database_name = 'CyberNexusDB'
+ORDER BY bs.backup_set_id;
+GO

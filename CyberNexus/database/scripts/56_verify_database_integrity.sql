@@ -1,0 +1,5 @@
+DBCC CHECKDB ('CyberNexusDB') WITH NO_INFOMSGS;
+GO
+
+DBCC CHECKDB ('CyberNexusDB_RecoveryTest2') WITH NO_INFOMSGS;
+GO
