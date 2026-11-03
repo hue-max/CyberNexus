@@ -24,6 +24,7 @@ def register_asset(asset: dict) -> dict:
         existing = cursor.fetchone()
 
         if existing:
+            asset_id = existing[0]
             cursor.execute(
                 """
                 UPDATE dbo.Assets
@@ -33,9 +34,8 @@ def register_asset(asset: dict) -> dict:
                     LastSeen = SYSUTCDATETIME()
                 WHERE AssetID = ?
                 """,
-                (ip_address, operating_system, existing[0]),
+                (ip_address, operating_system, asset_id),
             )
-            asset_id = existing[0]
         else:
             cursor.execute(
                 """
@@ -87,6 +87,39 @@ def list_assets() -> list:
             dict(zip(columns, row))
             for row in cursor.fetchall()
         ]
+
+    finally:
+        connection.close()
+
+
+def mark_offline_assets(timeout_seconds: int = 120) -> int:
+    """Mark assets inactive when they have not been seen recently."""
+    if timeout_seconds < 1:
+        raise ValueError("timeout_seconds must be at least 1")
+
+    connection = get_connection()
+
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            UPDATE dbo.Assets
+            SET Status = 'Inactive'
+            WHERE LastSeen IS NULL
+               OR LastSeen < DATEADD(
+                    SECOND, -?, SYSUTCDATETIME()
+               )
+            """,
+            (timeout_seconds,),
+        )
+
+        affected = cursor.rowcount
+        connection.commit()
+        return affected
+
+    except Exception:
+        connection.rollback()
+        raise
 
     finally:
         connection.close()
