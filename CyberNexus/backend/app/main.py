@@ -1,11 +1,16 @@
 
 import asyncio
 from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException
 
-from app.services.asset_monitor import discover_local_asset
+from app.services.asset_monitor import (
+    discover_local_asset,
+    discover_network_assets,
+)
 from app.services.asset_registry import (
     register_asset,
+    register_discovered_asset,
     list_assets,
     mark_offline_assets,
 )
@@ -14,13 +19,9 @@ from app.services.asset_registry import (
 async def monitoring_loop():
     while True:
         try:
-            # Keep this laptop's heartbeat updated
             asset = discover_local_asset()
             register_asset(asset)
-
-            # Mark assets inactive after 120 seconds
             mark_offline_assets(timeout_seconds=120)
-
         except Exception as exc:
             print(f"Background monitoring error: {exc}")
 
@@ -30,12 +31,14 @@ async def monitoring_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     task = asyncio.create_task(monitoring_loop())
-    yield
-    task.cancel()
     try:
-        await task
-    except asyncio.CancelledError:
-        pass
+        yield
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(
@@ -64,6 +67,38 @@ def refresh_local_asset():
 @app.get("/api/assets")
 def get_assets():
     return list_assets()
+
+
+@app.get("/api/assets/discover")
+def discover_network():
+    assets = discover_network_assets()
+    return {
+        "count": len(assets),
+        "assets": assets,
+    }
+
+
+@app.post("/api/assets/discover/save")
+def save_discovered_assets():
+    candidates = discover_network_assets()
+    saved = []
+    errors = []
+
+    for asset in candidates:
+        try:
+            saved.append(register_discovered_asset(asset))
+        except Exception as exc:
+            errors.append({
+                "ip_address": asset.get("ip_address"),
+                "error": str(exc),
+            })
+
+    return {
+        "discovered": len(candidates),
+        "saved_or_existing": len(saved),
+        "errors": errors,
+        "assets": saved,
+    }
 
 
 @app.post("/api/assets/check-offline")
