@@ -1,52 +1,92 @@
-from datetime import datetime, timezone, timedelta
-from threading import Lock
 
-_assets = {}
-_lock = Lock()
-
-OFFLINE_THRESHOLD_SECONDS = 60
+from app.services.database import get_connection
 
 
 def register_asset(asset: dict) -> dict:
-    """Register an asset or update its latest discovery information."""
-    now = datetime.now(timezone.utc)
-    asset_id = asset.get("mac_address") or asset.get("hostname")
+    """Save a discovered asset or update its existing record."""
+    connection = get_connection()
 
-    if not asset_id:
-        raise ValueError("Asset must have a MAC address or hostname")
+    try:
+        cursor = connection.cursor()
 
-    with _lock:
-        previous = _assets.get(asset_id, {})
-        record = {
-            **previous,
+        hostname = asset.get("hostname")
+        ip_address = asset.get("ip_address")
+        operating_system = asset.get("operating_system")
+
+        cursor.execute(
+            """
+            SELECT AssetID
+            FROM dbo.Assets
+            WHERE AssetName = ?
+            """,
+            (hostname,),
+        )
+        existing = cursor.fetchone()
+
+        if existing:
+            cursor.execute(
+                """
+                UPDATE dbo.Assets
+                SET IPAddress = ?,
+                    OperatingSystem = ?,
+                    Status = 'Active',
+                    LastSeen = SYSUTCDATETIME()
+                WHERE AssetID = ?
+                """,
+                (ip_address, operating_system, existing[0]),
+            )
+            asset_id = existing[0]
+        else:
+            cursor.execute(
+                """
+                INSERT INTO dbo.Assets
+                    (AssetName, AssetType, IPAddress,
+                     OperatingSystem, Status, LastSeen)
+                OUTPUT INSERTED.AssetID
+                VALUES (?, 'Computer', ?, ?, 'Active',
+                        SYSUTCDATETIME())
+                """,
+                (hostname, ip_address, operating_system),
+            )
+            asset_id = cursor.fetchone()[0]
+
+        connection.commit()
+
+        return {
             **asset,
             "asset_id": asset_id,
             "status": "online",
-            "first_seen": previous.get("first_seen", now.isoformat()),
-            "last_seen": now.isoformat(),
         }
-        _assets[asset_id] = record
-        return record.copy()
+
+    except Exception:
+        connection.rollback()
+        raise
+
+    finally:
+        connection.close()
 
 
 def list_assets() -> list:
-    """Return registered assets with updated online/offline status."""
-    now = datetime.now(timezone.utc)
+    """Retrieve registered assets from SQL Server."""
+    connection = get_connection()
 
-    with _lock:
-        results = []
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            SELECT AssetID, AssetName, AssetType, IPAddress,
+                   OperatingSystem, Criticality, Status,
+                   LastSeen, CreatedAt
+            FROM dbo.Assets
+            ORDER BY AssetID
+            """
+        )
 
-        for asset in _assets.values():
-            last_seen = datetime.fromisoformat(asset["last_seen"])
-            seconds_since_seen = (now - last_seen).total_seconds()
+        columns = [column[0] for column in cursor.description]
+        return [
+            dict(zip(columns, row))
+            for row in cursor.fetchall()
+        ]
 
-            updated_asset = asset.copy()
-            updated_asset["status"] = (
-                "offline"
-                if seconds_since_seen > OFFLINE_THRESHOLD_SECONDS
-                else "online"
-            )
-            updated_asset["seconds_since_seen"] = int(seconds_since_seen)
-            results.append(updated_asset)
-
-        return results
+    finally:
+        connection.close()
