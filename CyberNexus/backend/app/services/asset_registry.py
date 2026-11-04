@@ -29,6 +29,7 @@ def register_asset(asset: dict) -> dict:
 
         if existing:
             asset_id = existing[0]
+
             cursor.execute(
                 """
                 UPDATE dbo.Assets
@@ -37,6 +38,7 @@ def register_asset(asset: dict) -> dict:
                     MACAddress = COALESCE(?, MACAddress),
                     OperatingSystem = ?,
                     Status = 'Active',
+                    ConsecutiveFailures = 0,
                     LastSeen = SYSUTCDATETIME()
                 WHERE AssetID = ?
                 """,
@@ -53,10 +55,11 @@ def register_asset(asset: dict) -> dict:
                 """
                 INSERT INTO dbo.Assets
                     (AssetName, AssetType, IPAddress, MACAddress,
-                     OperatingSystem, Status, LastSeen)
+                     OperatingSystem, Status, LastSeen,
+                     ConsecutiveFailures)
                 OUTPUT INSERTED.AssetID
                 VALUES (?, 'Computer', ?, ?, ?, 'Active',
-                        SYSUTCDATETIME())
+                        SYSUTCDATETIME(), 0)
                 """,
                 (hostname, ip_address, mac_address, operating_system),
             )
@@ -91,7 +94,11 @@ def register_discovered_asset(asset: dict) -> dict:
         cursor = connection.cursor()
 
         cursor.execute(
-            "SELECT AssetID FROM dbo.Assets WHERE IPAddress = ?",
+            """
+            SELECT AssetID
+            FROM dbo.Assets
+            WHERE IPAddress = ?
+            """,
             (ip_address,),
         )
         existing = cursor.fetchone()
@@ -115,9 +122,11 @@ def register_discovered_asset(asset: dict) -> dict:
                 """
                 INSERT INTO dbo.Assets
                     (AssetName, AssetType, IPAddress, MACAddress,
-                     OperatingSystem, Status, LastSeen)
+                     OperatingSystem, Status, LastSeen,
+                     ConsecutiveFailures)
                 OUTPUT INSERTED.AssetID
-                VALUES (?, 'Computer', ?, ?, ?, 'Unverified', NULL)
+                VALUES (?, 'Computer', ?, ?, ?, 'Unverified',
+                        NULL, 0)
                 """,
                 (
                     asset_name,
@@ -154,7 +163,8 @@ def list_assets() -> list:
             """
             SELECT AssetID, AssetName, AssetType, IPAddress,
                    MACAddress, OperatingSystem, Criticality,
-                   Status, LastSeen, CreatedAt
+                   Status, LastSeen, CreatedAt,
+                   ConsecutiveFailures
             FROM dbo.Assets
             ORDER BY AssetID
             """
@@ -172,7 +182,7 @@ def list_assets() -> list:
 
 
 def mark_offline_assets(timeout_seconds: int = 120) -> int:
-    """Mark stale, previously active assets as inactive."""
+    """Mark stale active assets inactive only after two failures."""
     if timeout_seconds < 1:
         raise ValueError("timeout_seconds must be at least 1")
 
@@ -186,6 +196,7 @@ def mark_offline_assets(timeout_seconds: int = 120) -> int:
             UPDATE dbo.Assets
             SET Status = 'Inactive'
             WHERE Status = 'Active'
+              AND ConsecutiveFailures >= 2
               AND (
                     LastSeen IS NULL
                     OR LastSeen < DATEADD(
@@ -209,7 +220,7 @@ def mark_offline_assets(timeout_seconds: int = 120) -> int:
 
 
 def update_device_verification(asset: dict) -> dict:
-    """Update MAC address and reachability verification details."""
+    """Update asset status using consecutive ping failures."""
     connection = get_connection()
 
     try:
@@ -228,21 +239,62 @@ def update_device_verification(asset: dict) -> dict:
         cursor.execute(
             """
             UPDATE dbo.Assets
-            SET MACAddress = COALESCE(?, MACAddress)
+            SET MACAddress = COALESCE(?, MACAddress),
+
+                ConsecutiveFailures = CASE
+                    WHEN ? = 'reachable' THEN 0
+                    WHEN Status = 'Unverified' THEN 0
+                    ELSE ConsecutiveFailures + 1
+                END,
+
+                Status = CASE
+                    WHEN ? = 'reachable' THEN 'Active'
+                    WHEN Status = 'Unverified' THEN 'Unverified'
+                    WHEN ConsecutiveFailures + 1 >= 2
+                        THEN 'Inactive'
+                    ELSE Status
+                END,
+
+                LastSeen = CASE
+                    WHEN ? = 'reachable'
+                    THEN SYSUTCDATETIME()
+                    ELSE LastSeen
+                END
+
             WHERE IPAddress = ?
             """,
-            (mac_address, ip_address),
+            (
+                mac_address,
+                reachability,
+                reachability,
+                reachability,
+                ip_address,
+            ),
         )
 
-        affected = cursor.rowcount
+        cursor.execute(
+            """
+            SELECT Status, ConsecutiveFailures
+            FROM dbo.Assets
+            WHERE IPAddress = ?
+            """,
+            (ip_address,),
+        )
+
+        row = cursor.fetchone()
+
+        actual_status = row[0] if row else "Not Found"
+        failure_count = row[1] if row else None
+
         connection.commit()
 
         return {
             "ip_address": ip_address,
             "mac_address": mac_address,
             "reachability": reachability,
-            "database_record_found": affected > 0,
-            "status_changed": False,
+            "status": actual_status,
+            "consecutive_failures": failure_count,
+            "database_record_found": row is not None,
         }
 
     except Exception:
