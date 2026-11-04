@@ -7,10 +7,13 @@ from fastapi import FastAPI, HTTPException
 from app.services.asset_monitor import (
     discover_local_asset,
     discover_network_assets,
+    verify_network_assets,
 )
+
 from app.services.asset_registry import (
     register_asset,
     register_discovered_asset,
+    update_device_verification,
     list_assets,
     mark_offline_assets,
 )
@@ -98,6 +101,29 @@ def save_discovered_assets():
         "saved_or_existing": len(saved),
         "errors": errors,
         "assets": saved,
+    }
+
+
+@app.post("/api/assets/verify")
+def verify_network_devices():
+    assets = verify_network_assets()
+    updated = []
+    errors = []
+
+    for asset in assets:
+        try:
+            updated.append(update_device_verification(asset))
+        except Exception as exc:
+            errors.append({
+                "ip_address": asset.get("ip_address"),
+                "error": str(exc),
+            })
+
+    return {
+        "discovered": len(assets),
+        "updated": len(updated),
+        "errors": errors,
+        "results": updated,
     }
 
 
