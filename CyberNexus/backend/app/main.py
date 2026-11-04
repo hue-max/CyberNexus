@@ -24,29 +24,35 @@ from app.services.asset_registry import (
 async def monitoring_loop():
     while True:
         try:
-            # Refresh the local laptop heartbeat
+            # Refresh local laptop heartbeat
             local_asset = discover_local_asset()
             register_asset(local_asset)
 
-            # Discover and register network candidates
+            # Discover network candidates
             candidates = discover_network_assets()
 
             for asset in candidates:
-                register_discovered_asset(asset)
+                try:
+                    register_discovered_asset(asset)
+                except Exception as exc:
+                    print(f"Asset registration error: {exc}")
 
-            # Check reachability and refresh MAC information
+            # Verify network devices
             verified_assets = verify_network_assets()
 
             for asset in verified_assets:
-                update_device_verification(asset)
+                try:
+                    update_device_verification(asset)
+                    save_monitoring_history(
+                        asset["ip_address"],
+                        asset["reachability"],
+                    )
+                except Exception as exc:
+                    print(
+                        f"Monitoring update error for "
+                        f"{asset.get('ip_address')}: {exc}"
+                    )
 
-                # Save reachability history
-                save_monitoring_history(
-                    asset["ip_address"],
-                    asset["reachability"],
-                )
-
-            # Mark only stale Active records as inactive
             mark_offline_assets(timeout_seconds=120)
 
         except Exception as exc:
@@ -109,13 +115,21 @@ def discover_network():
 def save_discovered_assets():
     candidates = discover_network_assets()
     saved = []
+    errors = []
 
     for asset in candidates:
-        saved.append(register_discovered_asset(asset))
+        try:
+            saved.append(register_discovered_asset(asset))
+        except Exception as exc:
+            errors.append({
+                "ip_address": asset.get("ip_address"),
+                "error": str(exc),
+            })
 
     return {
         "discovered": len(candidates),
         "saved_or_existing": len(saved),
+        "errors": errors,
         "assets": saved,
     }
 
@@ -123,15 +137,23 @@ def save_discovered_assets():
 @app.post("/api/assets/verify")
 def verify_network_devices():
     assets = verify_network_assets()
-    results = []
+    updated = []
+    errors = []
 
     for asset in assets:
-        results.append(update_device_verification(asset))
+        try:
+            updated.append(update_device_verification(asset))
+        except Exception as exc:
+            errors.append({
+                "ip_address": asset.get("ip_address"),
+                "error": str(exc),
+            })
 
     return {
         "discovered": len(assets),
-        "updated": len(results),
-        "results": results,
+        "updated": len(updated),
+        "errors": errors,
+        "results": updated,
     }
 
 
