@@ -11,12 +11,11 @@ def register_asset(asset: dict) -> dict:
 
         hostname = asset.get("hostname")
         ip_address = asset.get("ip_address")
+        mac_address = asset.get("mac_address")
         operating_system = asset.get("operating_system") or "Unknown"
 
         if not hostname:
-            raise ValueError(
-                "A hostname is required for verified asset registration."
-            )
+            raise ValueError("A hostname is required.")
 
         cursor.execute(
             """
@@ -35,39 +34,36 @@ def register_asset(asset: dict) -> dict:
                 UPDATE dbo.Assets
                 SET AssetName = ?,
                     IPAddress = ?,
+                    MACAddress = COALESCE(?, MACAddress),
                     OperatingSystem = ?,
                     Status = 'Active',
                     LastSeen = SYSUTCDATETIME()
                 WHERE AssetID = ?
                 """,
-                (hostname, ip_address, operating_system, asset_id),
+                (hostname, ip_address, mac_address,
+                 operating_system, asset_id),
             )
         else:
             cursor.execute(
                 """
                 INSERT INTO dbo.Assets
-                    (AssetName, AssetType, IPAddress,
+                    (AssetName, AssetType, IPAddress, MACAddress,
                      OperatingSystem, Status, LastSeen)
                 OUTPUT INSERTED.AssetID
-                VALUES (?, 'Computer', ?, ?, 'Active',
+                VALUES (?, 'Computer', ?, ?, ?, 'Active',
                         SYSUTCDATETIME())
                 """,
-                (hostname, ip_address, operating_system),
+                (hostname, ip_address, mac_address, operating_system),
             )
             asset_id = cursor.fetchone()[0]
 
         connection.commit()
 
-        return {
-            **asset,
-            "asset_id": asset_id,
-            "status": "online",
-        }
+        return {**asset, "asset_id": asset_id, "status": "online"}
 
     except Exception:
         connection.rollback()
         raise
-
     finally:
         connection.close()
 
@@ -75,6 +71,7 @@ def register_asset(asset: dict) -> dict:
 def register_discovered_asset(asset: dict) -> dict:
     """Store an ARP discovery candidate as unverified."""
     ip_address = asset.get("ip_address")
+    mac_address = asset.get("mac_address")
 
     if not ip_address:
         raise ValueError("An IP address is required.")
@@ -83,14 +80,8 @@ def register_discovered_asset(asset: dict) -> dict:
 
     try:
         cursor = connection.cursor()
-
-        # Match by IP because an ARP candidate has no known hostname.
         cursor.execute(
-            """
-            SELECT AssetID
-            FROM dbo.Assets
-            WHERE IPAddress = ?
-            """,
+            "SELECT AssetID FROM dbo.Assets WHERE IPAddress = ?",
             (ip_address,),
         )
         existing = cursor.fetchone()
@@ -100,46 +91,33 @@ def register_discovered_asset(asset: dict) -> dict:
 
         if existing:
             asset_id = existing[0]
-
-            # Do not overwrite an existing verified asset's details.
-            # Keep unknown candidates unverified.
             cursor.execute(
                 """
                 UPDATE dbo.Assets
-                SET Status = CASE
-                    WHEN Status = 'Active' THEN 'Active'
-                    WHEN Status = 'Inactive' THEN 'Inactive'
-                    ELSE 'Unverified'
-                END
+                SET MACAddress = COALESCE(?, MACAddress)
                 WHERE AssetID = ?
                 """,
-                (asset_id,),
+                (mac_address, asset_id),
             )
         else:
             cursor.execute(
                 """
                 INSERT INTO dbo.Assets
-                    (AssetName, AssetType, IPAddress,
+                    (AssetName, AssetType, IPAddress, MACAddress,
                      OperatingSystem, Status, LastSeen)
                 OUTPUT INSERTED.AssetID
-                VALUES (?, 'Computer', ?, ?, 'Unverified', NULL)
+                VALUES (?, 'Computer', ?, ?, ?, 'Unverified', NULL)
                 """,
-                (asset_name, ip_address, operating_system),
+                (asset_name, ip_address, mac_address, operating_system),
             )
             asset_id = cursor.fetchone()[0]
 
         connection.commit()
-
-        return {
-            **asset,
-            "asset_id": asset_id,
-            "status": "unverified",
-        }
+        return {**asset, "asset_id": asset_id, "status": "unverified"}
 
     except Exception:
         connection.rollback()
         raise
-
     finally:
         connection.close()
 
@@ -153,18 +131,15 @@ def list_assets() -> list:
         cursor.execute(
             """
             SELECT AssetID, AssetName, AssetType, IPAddress,
-                   OperatingSystem, Criticality, Status,
-                   LastSeen, CreatedAt
+                   MACAddress, OperatingSystem, Criticality,
+                   Status, LastSeen, CreatedAt
             FROM dbo.Assets
             ORDER BY AssetID
             """
         )
 
         columns = [column[0] for column in cursor.description]
-        return [
-            dict(zip(columns, row))
-            for row in cursor.fetchall()
-        ]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
     finally:
         connection.close()
@@ -201,6 +176,49 @@ def mark_offline_assets(timeout_seconds: int = 120) -> int:
     except Exception:
         connection.rollback()
         raise
+    finally:
+        connection.close()
 
+
+def update_device_verification(asset: dict) -> dict:
+    """Update MAC address and reachability verification details."""
+    connection = get_connection()
+
+    try:
+        cursor = connection.cursor()
+
+        ip_address = asset.get("ip_address")
+        mac_address = asset.get("mac_address")
+        reachability = asset.get("reachability")
+
+        if not ip_address:
+            raise ValueError("IP address is required.")
+
+        if reachability not in ("reachable", "unreachable"):
+            raise ValueError("Invalid reachability result.")
+
+        cursor.execute(
+            """
+            UPDATE dbo.Assets
+            SET MACAddress = COALESCE(?, MACAddress)
+            WHERE IPAddress = ?
+            """,
+            (mac_address, ip_address),
+        )
+
+        affected = cursor.rowcount
+        connection.commit()
+
+        return {
+            "ip_address": ip_address,
+            "mac_address": mac_address,
+            "reachability": reachability,
+            "database_record_found": affected > 0,
+            "status_changed": False,
+        }
+
+    except Exception:
+        connection.rollback()
+        raise
     finally:
         connection.close()
