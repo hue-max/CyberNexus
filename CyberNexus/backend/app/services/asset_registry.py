@@ -40,8 +40,13 @@ def register_asset(asset: dict) -> dict:
                     LastSeen = SYSUTCDATETIME()
                 WHERE AssetID = ?
                 """,
-                (hostname, ip_address, mac_address,
-                 operating_system, asset_id),
+                (
+                    hostname,
+                    ip_address,
+                    mac_address,
+                    operating_system,
+                    asset_id,
+                ),
             )
         else:
             cursor.execute(
@@ -59,7 +64,11 @@ def register_asset(asset: dict) -> dict:
 
         connection.commit()
 
-        return {**asset, "asset_id": asset_id, "status": "online"}
+        return {
+            **asset,
+            "asset_id": asset_id,
+            "status": "online",
+        }
 
     except Exception:
         connection.rollback()
@@ -80,6 +89,7 @@ def register_discovered_asset(asset: dict) -> dict:
 
     try:
         cursor = connection.cursor()
+
         cursor.execute(
             "SELECT AssetID FROM dbo.Assets WHERE IPAddress = ?",
             (ip_address,),
@@ -91,6 +101,7 @@ def register_discovered_asset(asset: dict) -> dict:
 
         if existing:
             asset_id = existing[0]
+
             cursor.execute(
                 """
                 UPDATE dbo.Assets
@@ -108,12 +119,22 @@ def register_discovered_asset(asset: dict) -> dict:
                 OUTPUT INSERTED.AssetID
                 VALUES (?, 'Computer', ?, ?, ?, 'Unverified', NULL)
                 """,
-                (asset_name, ip_address, mac_address, operating_system),
+                (
+                    asset_name,
+                    ip_address,
+                    mac_address,
+                    operating_system,
+                ),
             )
             asset_id = cursor.fetchone()[0]
 
         connection.commit()
-        return {**asset, "asset_id": asset_id, "status": "unverified"}
+
+        return {
+            **asset,
+            "asset_id": asset_id,
+            "status": "unverified",
+        }
 
     except Exception:
         connection.rollback()
@@ -128,6 +149,7 @@ def list_assets() -> list:
 
     try:
         cursor = connection.cursor()
+
         cursor.execute(
             """
             SELECT AssetID, AssetName, AssetType, IPAddress,
@@ -139,7 +161,11 @@ def list_assets() -> list:
         )
 
         columns = [column[0] for column in cursor.description]
-        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+        return [
+            dict(zip(columns, row))
+            for row in cursor.fetchall()
+        ]
 
     finally:
         connection.close()
@@ -154,6 +180,7 @@ def mark_offline_assets(timeout_seconds: int = 120) -> int:
 
     try:
         cursor = connection.cursor()
+
         cursor.execute(
             """
             UPDATE dbo.Assets
@@ -171,6 +198,7 @@ def mark_offline_assets(timeout_seconds: int = 120) -> int:
 
         affected = cursor.rowcount
         connection.commit()
+
         return affected
 
     except Exception:
@@ -220,5 +248,87 @@ def update_device_verification(asset: dict) -> dict:
     except Exception:
         connection.rollback()
         raise
+    finally:
+        connection.close()
+
+
+def save_monitoring_history(
+    ip_address: str,
+    reachability: str,
+) -> dict:
+    """Save a device reachability check in monitoring history."""
+    if not ip_address:
+        raise ValueError("IP address is required.")
+
+    if reachability not in ("reachable", "unreachable"):
+        raise ValueError("Invalid reachability result.")
+
+    connection = get_connection()
+
+    try:
+        cursor = connection.cursor()
+
+        cursor.execute(
+            """
+            INSERT INTO dbo.AssetMonitoringHistory
+                (AssetID, Reachability)
+            SELECT AssetID, ?
+            FROM dbo.Assets
+            WHERE IPAddress = ?
+            """,
+            (reachability, ip_address),
+        )
+
+        affected = cursor.rowcount
+        connection.commit()
+
+        return {
+            "ip_address": ip_address,
+            "reachability": reachability,
+            "history_saved": affected > 0,
+        }
+
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def get_monitoring_history(limit: int = 100) -> list:
+    """Retrieve recent device monitoring history."""
+    if limit < 1:
+        raise ValueError("Limit must be at least 1.")
+
+    connection = get_connection()
+
+    try:
+        cursor = connection.cursor()
+
+        cursor.execute(
+            """
+            SELECT TOP (?)
+                h.MonitoringID,
+                h.AssetID,
+                a.AssetName,
+                a.IPAddress,
+                a.MACAddress,
+                h.Reachability,
+                h.CheckedAt
+            FROM dbo.AssetMonitoringHistory AS h
+            INNER JOIN dbo.Assets AS a
+                ON h.AssetID = a.AssetID
+            ORDER BY h.CheckedAt DESC
+            """,
+            (limit,),
+        )
+
+        columns = [column[0] for column in cursor.description]
+
+        return [
+            dict(zip(columns, row))
+            for row in cursor.fetchall()
+        ]
+
     finally:
         connection.close()

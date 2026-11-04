@@ -14,6 +14,8 @@ from app.services.asset_registry import (
     register_asset,
     register_discovered_asset,
     update_device_verification,
+    save_monitoring_history,
+    get_monitoring_history,
     list_assets,
     mark_offline_assets,
 )
@@ -22,13 +24,41 @@ from app.services.asset_registry import (
 async def monitoring_loop():
     while True:
         try:
-            asset = discover_local_asset()
-            register_asset(asset)
-            mark_offline_assets(timeout_seconds=120)
-        except Exception as exc:
-            print(f"Background monitoring error: {exc}")
+            # Refresh local laptop heartbeat
+            local_asset = discover_local_asset()
+            register_asset(local_asset)
 
-        await asyncio.sleep(30)
+            # Discover network candidates
+            candidates = discover_network_assets()
+
+            for asset in candidates:
+                try:
+                    register_discovered_asset(asset)
+                except Exception as exc:
+                    print(f"Asset registration error: {exc}")
+
+            # Verify network devices
+            verified_assets = verify_network_assets()
+
+            for asset in verified_assets:
+                try:
+                    update_device_verification(asset)
+                    save_monitoring_history(
+                        asset["ip_address"],
+                        asset["reachability"],
+                    )
+                except Exception as exc:
+                    print(
+                        f"Monitoring update error for "
+                        f"{asset.get('ip_address')}: {exc}"
+                    )
+
+            mark_offline_assets(timeout_seconds=120)
+
+        except Exception as exc:
+            print(f"Continuous monitoring error: {exc}")
+
+        await asyncio.sleep(60)
 
 
 @asynccontextmanager
@@ -46,7 +76,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="CyberNexus API",
-    description="Asset Discovery and Monitoring",
+    description="Asset Discovery and Continuous Monitoring",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -124,6 +154,22 @@ def verify_network_devices():
         "updated": len(updated),
         "errors": errors,
         "results": updated,
+    }
+
+
+@app.get("/api/assets/monitoring-history")
+def get_asset_monitoring_history(limit: int = 100):
+    if limit < 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Limit must be at least 1",
+        )
+
+    history = get_monitoring_history(limit)
+
+    return {
+        "count": len(history),
+        "history": history,
     }
 
 
