@@ -4,3 +4,5 @@ pyodbc
 boto3
 pydantic
 python-dotenv
+joblib
+scikit-learn
