@@ -122,7 +122,7 @@ def analyze_pending_events(limit: int = 100) -> dict:
                         f"{event_id}: {exc}"
                     )
 
-            # Detect repeated failed logins within a five-minute window.
+            # Detect repeated failed logins in the trailing five minutes.
             if str(event_type or "").strip().lower() in FAILED_LOGIN_TYPES:
                 cursor.execute(
                     """
@@ -133,8 +133,8 @@ def analyze_pending_events(limit: int = 100) -> dict:
                       AND e.EventTimestamp >= DATEADD(
                           MINUTE, -?, CAST(? AS DATETIME2)
                       )
-                      AND e.EventTimestamp <= DATEADD(
-                          MINUTE, ?, CAST(? AS DATETIME2)
+                      AND e.EventTimestamp < DATEADD(
+                          MICROSECOND, 1, CAST(? AS DATETIME2)
                       )
                       AND (
                           e.AssetID = ?
@@ -148,7 +148,6 @@ def analyze_pending_events(limit: int = 100) -> dict:
                     (
                         DETECTION_WINDOW_MINUTES,
                         event_timestamp,
-                        DETECTION_WINDOW_MINUTES,
                         event_timestamp,
                         asset_id,
                         asset_id,

@@ -1,4 +1,3 @@
-
 """Incident grouping and investigation management for CyberNexus."""
 
 from datetime import timedelta
@@ -63,7 +62,84 @@ def group_existing_threats() -> dict:
             """
         )
 
-        rows = cursor.fetchall()
+        rows = list(cursor.fetchall())
+
+        # Include related failed-login events as evidence when a
+        # brute-force threat has been detected.
+        existing_event_ids = {row[2] for row in rows}
+
+        for row in list(rows):
+            threat_type = row[1]
+
+            if str(threat_type).lower() != "brute_force":
+                continue
+
+            _, _, event_id, asset_id, source, timestamp, _ = row
+
+            if asset_id is None or not source or timestamp is None:
+                continue
+
+            cursor.execute(
+                """
+                SELECT
+                    e.EventID,
+                    e.AssetID,
+                    e.Source,
+                    e.EventTimestamp
+                FROM dbo.SecurityEvents AS e
+                WHERE e.AssetID = ?
+                  AND e.Source = ?
+                  AND LOWER(e.EventType) IN (
+                      'login_failure',
+                      'failed_login',
+                      'failed login'
+                  )
+                  AND e.EventTimestamp >= DATEADD(
+                      MINUTE, -?, CAST(? AS DATETIME2)
+                  )
+                  AND e.EventTimestamp <= CAST(? AS DATETIME2)
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM dbo.ThreatIncidentEvents AS tie
+                      WHERE tie.EventID = e.EventID
+                  )
+                ORDER BY e.EventTimestamp, e.EventID
+                """,
+                (
+                    asset_id,
+                    source,
+                    INCIDENT_WINDOW_MINUTES,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+
+            related_events = cursor.fetchall()
+
+            for related in related_events:
+                (
+                    related_event_id,
+                    related_asset_id,
+                    related_source,
+                    related_timestamp,
+                ) = related
+
+                if related_event_id in existing_event_ids:
+                    continue
+
+                rows.append(
+                    (
+                        None,
+                        "brute_force",
+                        related_event_id,
+                        related_asset_id,
+                        related_source,
+                        related_timestamp,
+                        0,
+                    )
+                )
+                existing_event_ids.add(related_event_id)
+
         buckets = {}
 
         for row in rows:
